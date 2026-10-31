@@ -96,6 +96,39 @@ static void apply_piodma_tunables(void)
 	reg_write(cfg, reg_read(cfg) & ~BIT(0));
 }
 
+#if AVD_TIER == 2
+#include "hw/tunables/tunables_v5t2_host.h"
+
+/* Hibiscus: the CM3 reaches the AVD base (CPU 0x500000000 on T8142) through this mirror. */
+#define AVD_HOST_MIRROR 0x40000000
+#define N_TUNABLES(t) ((int)(sizeof(t) / sizeof((t)[0])))
+
+/*
+ * AppleAVD's loadTunables writes these tables itself, around the decode table, before the
+ * CM3 runs; without them small frames decode exactly but 1080p H.264, HEVC and AV1 come out
+ * corrupted. Masked writes, like CAvdApComm::writeNCheckTunables.
+ */
+static void apply_host_tunables(const struct tunable *t, int n)
+{
+	for (int i = 0; i < n; i++) {
+		u32 *reg = REG(AVD_HOST_MIRROR + t[i].off);
+
+		reg_write(reg, (reg_read(reg) & ~t[i].mask) | (t[i].val & t[i].mask));
+	}
+}
+
+/*
+ * checkFlowCtrlResouceGroupTunables: a credit group is taken over once bit 31 of its first
+ * register reads zero again (Apple retries 101 times, 10 us apart). Bounded here as well.
+ */
+static void wait_flow_group(const struct tunable *t)
+{
+	for (int i = 0; i < 200000; i++)
+		if (!(reg_read(REG(AVD_HOST_MIRROR + t[0].off)) & 0x80000000u))
+			return;
+}
+#endif
+
 static void reset_tunable_range(u32 first, u32 last)
 {
 	int n_tunables = sizeof(avd_tunables) / sizeof(struct tunable);
@@ -152,19 +185,36 @@ void _start(void)
 {
 	/* Tansy explicitly restores the architectural vector base on each boot. */
 	reg_write(CM3_SCB_VTOR, 0);
+#if AVD_VER == 5 && AVD_TIER == 2
+	/* AppleAVD's Hibiscus order: flow credits, decode, wrapper, PIODMA, MCW, AXI2AF. */
+	apply_host_tunables(avd_flow_up, N_TUNABLES(avd_flow_up));
+	apply_host_tunables(avd_flow_down, N_TUNABLES(avd_flow_down));
+	wait_flow_group(avd_flow_up);
+	wait_flow_group(avd_flow_down);
+#endif
 	apply_tunables();
 #if AVD_VER == 5
+#if AVD_TIER == 2
+	apply_host_tunables(avd_wrap, N_TUNABLES(avd_wrap));
+#endif
 	apply_piodma_tunables();
+#if AVD_TIER == 2
+	apply_host_tunables(avd_mcw, N_TUNABLES(avd_mcw));
+	apply_host_tunables(avd_axi2af, N_TUNABLES(avd_axi2af));
+	/* Hibiscus DeviceInit also sets decode +0x1cc to 0x20. */
+	reg_write(REG(DECODE_CTRL_BASE + 0x1cc), 0x20);
+#endif
 #endif
 	/* Match Tansy's mailbox-0 doorbell enables (not-empty plus channel 5). */
 	reg_write(CM3_MBOX_IRQEN_0, 0x22);
 
-#if AVD_VER == 5 && AVD_TIER == 0
+#if AVD_VER == 5 && (AVD_TIER == 0 || AVD_TIER == 2)
 	/*
 	 * Tansy leaves reserved CM3 interrupt lines disabled.  Enabling every
 	 * line can take a latent reserved interrupt into the catch-all handler
 	 * before the mailbox doorbell is serviced.  These are the exact ISER
-	 * masks programmed by Apple's Tansy firmware at boot.
+	 * masks programmed by Apple's Tansy firmware at boot; Apple's Hibiscus
+	 * (T8142, tier 2) firmware programs the same seven words.
 	 */
 	static const u32 tansy_nvic_iser[] = {
 		0x0700c026, 0xc0000000, 0xef7bc00b, 0x7bdef7bd,

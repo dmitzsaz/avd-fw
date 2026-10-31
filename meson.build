@@ -29,6 +29,8 @@ avd_variants = [
     { 'name': 'avd-fw-v4-t0', 'version': '4', 'tier': '0', 'pad': '0x12000'},
     { 'name': 'avd-fw-v5-t0', 'version': '5', 'tier': '0', 'pad': '0x10000'},
     { 'name': 'avd-fw-v5-t1', 'version': '5', 'tier': '1', 'pad': '0x12000'},
+    # Hibiscus (T8142 / M5): v5 with the 12-VP tier-2 decode tunables, 0x12000 code/SRAM.
+    { 'name': 'avd-fw-v5-t2', 'version': '5', 'tier': '2', 'pad': '0x12000'},
 ]
 
 foreach var : avd_variants
